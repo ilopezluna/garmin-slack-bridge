@@ -8,6 +8,7 @@ export type FetchFn = typeof fetch;
 const TOKEN_PATH =
   "/personalapitoken-service/personal-api/personal-api-key/token";
 const ACTIVITIES_PATH = "/activitylist-service/activities/search/activities";
+const ACTIVITY_PATH = "/activity-service/activity";
 const TOKEN_CACHE_KEY = "garmin:access-token";
 /** Garmin tokens are valid for 24 h; we cache them a bit less for headroom. */
 export const TOKEN_TTL_SECONDS = 60 * 60 * 18;
@@ -87,6 +88,17 @@ export interface GarminActivity {
   maxSpeed?: number;
   startLatitude?: number;
   startLongitude?: number;
+  laps?: GarminLap[];
+  [key: string]: unknown;
+}
+
+/** One lap/split of an activity, from the splits endpoint. */
+export interface GarminLap {
+  lapIndex?: number;
+  distance?: number; // meters
+  duration?: number; // seconds
+  averageHR?: number;
+  averageSpeed?: number; // m/s
   [key: string]: unknown;
 }
 
@@ -130,6 +142,29 @@ export async function listRecentActivities(
   }
   const json = (await res.json()) as unknown;
   return parseSearchResponse(json);
+}
+
+/** Fetches the per-lap splits of an activity (lapDTOs shape; [] if it has none). */
+export async function getActivityLaps(
+  baseUrl: string,
+  bearerToken: string,
+  activityId: number | string,
+  fetchFn: FetchFn = fetch,
+): Promise<GarminLap[]> {
+  const res = await fetchFn(`${baseUrl}${ACTIVITY_PATH}/${activityId}/splits`, {
+    headers: {
+      Authorization: `Bearer ${bearerToken}`,
+      Accept: "application/json",
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`Garmin returned ${res.status} for splits of ${activityId}`);
+  }
+  const json = (await res.json()) as { lapDTOs?: unknown[] } | unknown[] | null;
+  const list = Array.isArray(json) ? json : json?.lapDTOs;
+  return Array.isArray(list)
+    ? list.filter((x): x is GarminLap => x !== null)
+    : [];
 }
 
 /** Converts `startTimeGMT` ("2026-11-08 06:30:00" or ISO) into UTC milliseconds. */

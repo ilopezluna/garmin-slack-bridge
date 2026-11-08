@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   activityStartMs,
   extractAccessToken,
+  getActivityLaps,
   getGarminAccessToken,
   listRecentActivities,
   obtainGarminToken,
@@ -121,6 +122,43 @@ describe("listRecentActivities", () => {
       (await listRecentActivities("https://garmin.test", "tok", 1, stub))
         .length,
     ).toBe(1);
+  });
+});
+
+describe("getActivityLaps", () => {
+  it("returns the lapDTOs of the splits endpoint", async () => {
+    const laps = [
+      { lapIndex: 1, distance: 1000, duration: 298, averageHR: 151 },
+      { lapIndex: 2, distance: 1000, duration: 305, averageHR: 154 },
+    ];
+    const stub = vi.fn(async (_input?: unknown, _init?: any) =>
+      jsonResponse(200, { lapDTOs: laps }),
+    );
+    expect(
+      await getActivityLaps("https://garmin.test", "tok", 123, stub),
+    ).toEqual(laps);
+    expect(String(stub.mock.calls[0][0])).toBe(
+      "https://garmin.test/activity-service/activity/123/splits",
+    );
+    expect(stub.mock.calls[0][1]?.headers?.Authorization).toBe("Bearer tok");
+  });
+
+  it("returns [] for an unexpected shape", async () => {
+    const stub = vi.fn(async (_input?: unknown, _init?: any) =>
+      jsonResponse(200, { nope: true }),
+    );
+    expect(await getActivityLaps("https://garmin.test", "tok", 1, stub)).toEqual(
+      [],
+    );
+  });
+
+  it("throws when Garmin fails", async () => {
+    const stub = vi.fn(async (_input?: unknown, _init?: any) =>
+      jsonResponse(404, {}),
+    );
+    await expect(
+      getActivityLaps("https://garmin.test", "tok", 1, stub),
+    ).rejects.toThrow("404");
   });
 });
 

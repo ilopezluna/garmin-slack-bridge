@@ -24,15 +24,15 @@ interface SlackPost {
 interface Fixture {
   kv: MemKV;
   slackBodies: SlackPost[];
-  stub: (...args: any[]) => any;
+  stub: typeof fetch;
   env: ReturnType<typeof makeEnv>["env"];
 }
 
-/** Global fetch stub: token, Garmin listing and Slack chat.postMessage. */
+/** Global fetch stub: token, Garmin listing/splits and Slack chat.postMessage. */
 function stubNetwork(
   kv: MemKV,
   activities: unknown[],
-  options: { slackStatus?: number; slackBody?: unknown } = {},
+  options: { slackStatus?: number; slackBody?: unknown; laps?: unknown[] } = {},
 ): Fixture {
   const slackBodies: SlackPost[] = [];
   const stub = vi.fn(async (input: unknown, init?: { body?: string }) => {
@@ -43,6 +43,14 @@ function stubNetwork(
     if (url.startsWith(LIST_URL)) {
       return new Response(JSON.stringify(activities), { status: 200 });
     }
+    if (url.startsWith("https://garmin.test/activity-service/activity/")) {
+      if (options.laps) {
+        return new Response(JSON.stringify({ lapDTOs: options.laps }), {
+          status: 200,
+        });
+      }
+      throw new Error(`unexpected URL in stub: ${url}`);
+    }
     if (url.startsWith("https://slack.com/api/chat.postMessage")) {
       slackBodies.push(JSON.parse(init?.body ?? "{}"));
       return new Response(JSON.stringify(options.slackBody ?? { ok: true }), {
@@ -51,7 +59,7 @@ function stubNetwork(
     }
     throw new Error(`unexpected URL in stub: ${url}`);
   });
-  return { kv, slackBodies, stub, env: makeEnv(kv).env };
+  return { kv, slackBodies, stub: stub as unknown as typeof fetch, env: makeEnv(kv).env };
 }
 
 describe("runOnce", () => {
@@ -104,6 +112,44 @@ describe("runOnce", () => {
     const result = await runOnce(fx2.env, fx2.stub);
     expect(result.posted).toBe(0);
     expect(fx2.slackBodies).toHaveLength(0);
+  });
+
+  it("posts the activity with per-lap splits when Garmin provides them", async () => {
+    const kv = new MemKV();
+    const older = fakeActivity({
+      activityId: 111,
+      startTimeGMT: "2026-11-07 08:00:00",
+    });
+    const fx1 = stubNetwork(kv, [older]);
+    await runOnce(fx1.env, fx1.stub); // bootstrap on the old one
+
+    const fx2 = stubNetwork(kv, [fakeActivity({ activityId: 222 })], {
+      laps: [
+        { lapIndex: 1, distance: 1000, duration: 298, averageHR: 151 },
+        { lapIndex: 2, distance: 1000, duration: 305, averageHR: 154 },
+      ],
+    });
+    await runOnce(fx2.env, fx2.stub);
+    const blocks = JSON.stringify(fx2.slackBodies[0].blocks);
+    expect(blocks).toContain("*Splits*");
+    expect(blocks).toContain("4:58/km"); // 298 s / 1 km
+    expect(fx2.slackBodies[0].text).toContain("*Splits*");
+  });
+
+  it("falls back to the summary when the splits call fails", async () => {
+    const kv = new MemKV();
+    const older = fakeActivity({
+      activityId: 111,
+      startTimeGMT: "2026-11-07 08:00:00",
+    });
+    const fx1 = stubNetwork(kv, [older]);
+    await runOnce(fx1.env, fx1.stub);
+
+    // No `laps` option: the stub throws on the splits URL.
+    const fx2 = stubNetwork(kv, [fakeActivity({ activityId: 222 })]);
+    await runOnce(fx2.env, fx2.stub);
+    expect(fx2.slackBodies).toHaveLength(1);
+    expect(JSON.stringify(fx2.slackBodies[0].blocks)).not.toContain("Splits");
   });
 
   it("if Slack fails, it throws and the watermark does not advance (retry on next cron)", async () => {
@@ -163,6 +209,55 @@ describe("buildSlackMessage", () => {
     expect(shouty.text).not.toContain("<!channel>");
     expect(shouty.text).not.toContain("*now*");
     expect(JSON.stringify(shouty.blocks)).not.toContain("<!channel>");
+  });
+
+  it("renders enrichment fields and splits when present", () => {
+    expect(message.text).not.toContain("Splits"); // the default fixture has no laps
+    const rich = buildSlackMessage(
+      fakeActivity({
+        maxHR: 178,
+        elevationLoss: 40,
+        averageRunningCadence: 172.4,
+        averagePower: 210.4,
+        trainingEffect: 3.4,
+        anaerobicTrainingEffect: 1.2,
+        activityTrainingLoad: 245.6,
+        laps: [
+          { lapIndex: 1, distance: 1000, duration: 298, averageHR: 151 },
+          { lapIndex: 2, distance: 1000, duration: 305, averageHR: 154 },
+        ],
+      }),
+    );
+    const body = JSON.stringify(rich.blocks);
+    for (const part of [
+      "max HR 178 bpm",
+      "−40 m",
+      "172 spm",
+      "210 W",
+      "TE 3.4/1.2",
+      "load 246",
+      "*Splits*",
+      "4:58/km",
+      "151 bpm",
+    ]) {
+      expect(body).toContain(part);
+    }
+    // text mirrors the blocks for text-only consumers
+    expect(rich.text).toContain("TE 3.4/1.2");
+    expect(rich.text).toContain("*Splits*");
+  });
+
+  it("caps the splits section at 20 laps", () => {
+    const many = buildSlackMessage(
+      fakeActivity({
+        laps: Array.from({ length: 25 }, (_, i) => ({
+          lapIndex: i + 1,
+          distance: 1000,
+          duration: 300,
+        })),
+      }),
+    );
+    expect(JSON.stringify(many.blocks)).toContain("5 more laps");
   });
 
   it("cycling activity shows speed instead of pace", () => {

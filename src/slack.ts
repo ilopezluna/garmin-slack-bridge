@@ -99,6 +99,18 @@ function mrkdwn(text: string) {
   return { type: "mrkdwn", text };
 }
 
+/** First finite numeric value among Garmin's tolerated field names. */
+function firstNumber(
+  activity: GarminActivity,
+  ...keys: string[]
+): number | null {
+  for (const key of keys) {
+    const value = activity[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
 /** Builds the Block Kit message for an activity. */
 export function buildSlackMessage(activity: GarminActivity): SlackMessage {
   const key = activityTypeKey(activity);
@@ -127,9 +139,32 @@ export function buildSlackMessage(activity: GarminActivity): SlackMessage {
   if (activity.elevationGain && activity.elevationGain > 0) {
     fields.push(`+${Math.round(activity.elevationGain)} m`);
   }
+  if (activity.elevationLoss && activity.elevationLoss > 0) {
+    fields.push(`−${Math.round(activity.elevationLoss)} m`);
+  }
   if (activity.averageHR && activity.averageHR > 0) {
     fields.push(`avg HR ${Math.round(activity.averageHR)} bpm`);
   }
+  if (activity.maxHR && activity.maxHR > 0) {
+    fields.push(`max HR ${Math.round(activity.maxHR)} bpm`);
+  }
+  const cadence = firstNumber(
+    activity,
+    "averageRunningCadence",
+    "averageRunCadence",
+  );
+  if (cadence && cadence > 0) fields.push(`${Math.round(cadence)} spm`);
+  const power = firstNumber(activity, "averagePower", "avgPower");
+  if (power && power > 0) fields.push(`${Math.round(power)} W`);
+  const aerobic = firstNumber(activity, "trainingEffect");
+  const anaerobic = firstNumber(activity, "anaerobicTrainingEffect");
+  if (aerobic && aerobic > 0) {
+    fields.push(
+      `TE ${aerobic.toFixed(1)}${anaerobic && anaerobic > 0 ? `/${anaerobic.toFixed(1)}` : ""}`,
+    );
+  }
+  const load = firstNumber(activity, "activityTrainingLoad", "trainingLoad");
+  if (load && load > 0) fields.push(`load ${Math.round(load)}`);
   if (activity.calories && activity.calories > 0) {
     fields.push(`${Math.round(activity.calories)} kcal`);
   }
@@ -147,6 +182,29 @@ export function buildSlackMessage(activity: GarminActivity): SlackMessage {
       text: mrkdwn(fields.join(" · ")),
     });
   }
+
+  // Per-lap splits (runner pace, rider speed, duration otherwise).
+  const laps = activity.laps ?? [];
+  let splits: string | null = null;
+  if (laps.length > 0) {
+    const isRunner =
+      key.includes("run") || key.includes("walk") || key.includes("hike");
+    const isRider = key.includes("cycl") || key.includes("bik");
+    const lines = laps.slice(0, 20).map((lap, i) => {
+      const pace = isRunner ? formatPace(lap.distance, lap.duration) : null;
+      const speed = isRider ? formatSpeed(lap.averageSpeed) : null;
+      const effort = pace ?? speed ?? formatDuration(lap.duration);
+      const hr =
+        lap.averageHR && lap.averageHR > 0
+          ? `${Math.round(lap.averageHR)} bpm`
+          : null;
+      return `*${lap.lapIndex ?? i + 1}* ${[effort, hr].filter(Boolean).join(" · ")}`;
+    });
+    if (laps.length > 20) lines.push(`…and ${laps.length - 20} more laps`);
+    splits = ["*Splits*", ...lines].join("\n");
+    blocks.push({ type: "section", text: mrkdwn(splits) });
+  }
+
   if (when) {
     blocks.push({
       type: "context",
@@ -163,6 +221,7 @@ export function buildSlackMessage(activity: GarminActivity): SlackMessage {
     }`,
   ];
   if (when) textLines.push(`🗓️ ${when} · via Garmin Connect`);
+  if (splits) textLines.push(splits);
   textLines.push(link);
   const text = textLines.join("\n");
   return { text, blocks };
