@@ -4,6 +4,7 @@ import {
   GARMIN_BASE_URL,
   getGarminAccessToken,
   listRecentActivities,
+  TOKEN_CACHE_KEY,
   type FetchFn,
   type GarminActivity,
 } from "./garmin";
@@ -26,6 +27,37 @@ export interface RunResult {
 
 function readWatermark(env: Env): Promise<number> {
   return env.KV.get(WATERMARK_KEY).then((v) => Number(v ?? 0));
+}
+
+/** Lists activities; if the cached token was rejected (rotated API key or revoked
+ * JWT), it drops the cache, mints a fresh token and retries once. */
+async function listWithFreshTokenOn401(
+  env: Env,
+  baseUrl: string,
+  token: string,
+  fetchFn: FetchFn,
+): Promise<{ token: string; activities: GarminActivity[] }> {
+  try {
+    const activities = await listRecentActivities(
+      baseUrl,
+      token,
+      LIST_LIMIT,
+      fetchFn,
+    );
+    return { token, activities };
+  } catch (err) {
+    if (!String(err).includes("401")) throw err;
+    await env.KV.delete(TOKEN_CACHE_KEY);
+    const fresh = await getGarminAccessToken(env, fetchFn);
+    const activities = await listRecentActivities(
+      baseUrl,
+      fresh,
+      LIST_LIMIT,
+      fetchFn,
+    );
+    console.log("[garmin-slack-bridge] cached token was rejected; refreshed it");
+    return { token: fresh, activities };
+  }
 }
 
 /** Enriches the activity with its full detail; if it fails, the summary is posted as-is. */
@@ -68,10 +100,10 @@ export async function runOnce(
   const watermark = await readWatermark(env);
   const token = await getGarminAccessToken(env, fetchFn);
   const baseUrl = env.GARMIN_BASE_URL ?? GARMIN_BASE_URL;
-  const activities = await listRecentActivities(
+  const { token: activeToken, activities } = await listWithFreshTokenOn401(
+    env,
     baseUrl,
     token,
-    LIST_LIMIT,
     fetchFn,
   );
 
@@ -95,7 +127,7 @@ export async function runOnce(
     .filter((t) => t.start > watermark)
     .sort((a, b) => a.start - b.start);
   for (const { activity, start } of toPost) {
-    const enriched = await withDetail(baseUrl, token, activity, fetchFn);
+    const enriched = await withDetail(baseUrl, activeToken, activity, fetchFn);
     await postSlackMessage(env, buildSlackMessage(enriched), fetchFn);
     // The watermark only advances if the post succeeded: if it fails midway,
     // the next cron retries what is pending without duplicating what was posted.

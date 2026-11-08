@@ -32,16 +32,23 @@ interface Fixture {
 function stubNetwork(
   kv: MemKV,
   activities: unknown[],
-  options: { slackStatus?: number; slackBody?: unknown; detail?: unknown } = {},
+  options: {
+    slackStatus?: number;
+    slackBody?: unknown;
+    detail?: unknown;
+    listStatuses?: number[];
+  } = {},
 ): Fixture {
   const slackBodies: SlackPost[] = [];
+  let listCalls = 0;
   const stub = vi.fn(async (input: unknown, init?: { body?: string }) => {
     const url = String(input);
     if (url.startsWith(TOKEN_URL)) {
       return new Response("tok-test", { status: 200 });
     }
     if (url.startsWith(LIST_URL)) {
-      return new Response(JSON.stringify(activities), { status: 200 });
+      const status = options.listStatuses?.[listCalls++] ?? 200;
+      return new Response(JSON.stringify(activities), { status });
     }
     if (url.startsWith("https://garmin.test/activity-service/activity/")) {
       if (options.detail) {
@@ -172,6 +179,29 @@ describe("runOnce", () => {
     await runOnce(fx2.env, fx2.stub);
     expect(fx2.slackBodies).toHaveLength(1);
     expect(JSON.stringify(fx2.slackBodies[0].blocks)).not.toContain("Splits");
+  });
+
+  it("refreshes the token once and retries when Garmin rejects it with 401", async () => {
+    const kv = new MemKV();
+    const older = fakeActivity({
+      activityId: 111,
+      startTimeGMT: "2026-11-07 08:00:00",
+    });
+    const fx1 = stubNetwork(kv, [older]);
+    await runOnce(fx1.env, fx1.stub); // bootstrap on the old one
+
+    // Simulate a stale cached token: plant a bogus one; the stub rejects the
+    // first listing attempt with 401 and succeeds on the retry.
+    await kv.put("garmin:access-token", "stale-token");
+    const fx2 = stubNetwork(kv, [fakeActivity({ activityId: 222 })], {
+      listStatuses: [401, 200],
+    });
+
+    const result = await runOnce(fx2.env, fx2.stub);
+    expect(result).toEqual({ bootstrap: false, posted: 1 });
+    expect(fx2.slackBodies).toHaveLength(1);
+    // the bogus token was dropped and a fresh one cached
+    expect(await kv.get("garmin:access-token")).toBe("tok-test");
   });
 
   it("if Slack fails, it throws and the watermark does not advance (retry on next cron)", async () => {

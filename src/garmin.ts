@@ -9,9 +9,9 @@ const TOKEN_PATH =
   "/personalapitoken-service/personal-api/personal-api-key/token";
 const ACTIVITIES_PATH = "/activitylist-service/activities/search/activities";
 const ACTIVITY_PATH = "/activity-service/activity";
-const TOKEN_CACHE_KEY = "garmin:access-token";
 /** Garmin tokens are valid for 24 h; we cache them a bit less for headroom. */
 export const TOKEN_TTL_SECONDS = 60 * 60 * 18;
+export const TOKEN_CACHE_KEY = "garmin:access-token";
 
 /** Extracts the access token from the token endpoint response, tolerating field naming. */
 export function extractAccessToken(body: unknown): string | null {
