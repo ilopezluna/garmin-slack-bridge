@@ -102,3 +102,5 @@ formatting, and pace-vs-speed selection by sport.
   with anyone.
 - The message is Block Kit, but the `text` field mirrors its full content (title,
   metrics, date and link), so consumers that only read `text` miss nothing.
+
+`MIT` — see [LICENSE](LICENSE).
