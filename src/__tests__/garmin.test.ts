@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   activityStartMs,
   extractAccessToken,
-  getActivityLaps,
+  getActivityDetail,
   getGarminAccessToken,
   listRecentActivities,
   obtainGarminToken,
@@ -125,31 +125,30 @@ describe("listRecentActivities", () => {
   });
 });
 
-describe("getActivityLaps", () => {
-  it("returns the lapDTOs of the splits endpoint", async () => {
-    const laps = [
-      { lapIndex: 1, distance: 1000, duration: 298, averageHR: 151 },
-      { lapIndex: 2, distance: 1000, duration: 305, averageHR: 154 },
-    ];
+describe("getActivityDetail", () => {
+  it("flattens summaryDTO and keeps the detail-only fields", async () => {
     const stub = vi.fn(async (_input?: unknown, _init?: any) =>
-      jsonResponse(200, { lapDTOs: laps }),
+      jsonResponse(200, {
+        activityId: 123,
+        activityName: "Run",
+        locationName: "Premià de Mar",
+        splitSummaries: [{ splitType: "RWD_RUN", distance: 8881 }],
+        summaryDTO: { distance: 9740, averageRunCadence: 163.5, maxHR: 147 },
+      }),
     );
-    expect(
-      await getActivityLaps("https://garmin.test", "tok", 123, stub),
-    ).toEqual(laps);
+    const detail = await getActivityDetail("https://garmin.test", "tok", 123, stub);
     expect(String(stub.mock.calls[0][0])).toBe(
-      "https://garmin.test/activity-service/activity/123/splits",
+      "https://garmin.test/activity-service/activity/123",
     );
-    expect(stub.mock.calls[0][1]?.headers?.Authorization).toBe("Bearer tok");
-  });
-
-  it("returns [] for an unexpected shape", async () => {
-    const stub = vi.fn(async (_input?: unknown, _init?: any) =>
-      jsonResponse(200, { nope: true }),
-    );
-    expect(await getActivityLaps("https://garmin.test", "tok", 1, stub)).toEqual(
-      [],
-    );
+    expect(detail).toEqual({
+      activityId: 123,
+      activityName: "Run",
+      locationName: "Premià de Mar",
+      splitSummaries: [{ splitType: "RWD_RUN", distance: 8881 }],
+      distance: 9740,
+      averageRunCadence: 163.5,
+      maxHR: 147,
+    });
   });
 
   it("throws when Garmin fails", async () => {
@@ -157,7 +156,7 @@ describe("getActivityLaps", () => {
       jsonResponse(404, {}),
     );
     await expect(
-      getActivityLaps("https://garmin.test", "tok", 1, stub),
+      getActivityDetail("https://garmin.test", "tok", 1, stub),
     ).rejects.toThrow("404");
   });
 });

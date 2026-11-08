@@ -150,26 +150,24 @@ export function buildSlackMessage(activity: GarminActivity): SlackMessage {
   }
   const cadence = firstNumber(
     activity,
-    "averageRunningCadence",
     "averageRunCadence",
+    "averageRunningCadence",
   );
   if (cadence && cadence > 0) fields.push(`${Math.round(cadence)} spm`);
-  const power = firstNumber(activity, "averagePower", "avgPower");
-  if (power && power > 0) fields.push(`${Math.round(power)} W`);
-  const aerobic = firstNumber(activity, "trainingEffect");
-  const anaerobic = firstNumber(activity, "anaerobicTrainingEffect");
-  if (aerobic && aerobic > 0) {
-    fields.push(
-      `TE ${aerobic.toFixed(1)}${anaerobic && anaerobic > 0 ? `/${anaerobic.toFixed(1)}` : ""}`,
-    );
-  }
-  const load = firstNumber(activity, "activityTrainingLoad", "trainingLoad");
-  if (load && load > 0) fields.push(`load ${Math.round(load)}`);
   if (activity.calories && activity.calories > 0) {
     fields.push(`${Math.round(activity.calories)} kcal`);
   }
 
   const when = activity.startTimeLocal ?? activity.startTimeGMT;
+  const whenLine = when
+    ? [
+        `🗓️ ${when}`,
+        activity.locationName ? `📍 ${activity.locationName}` : null,
+        "via Garmin Connect",
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : null;
   const blocks: SlackBlock[] = [
     {
       type: "section",
@@ -183,32 +181,40 @@ export function buildSlackMessage(activity: GarminActivity): SlackMessage {
     });
   }
 
-  // Per-lap splits (runner pace, rider speed, duration otherwise).
-  const laps = activity.laps ?? [];
+  // Run/walk/interval phases from the detail endpoint (Splits section).
+  const summaries = activity.splitSummaries ?? [];
   let splits: string | null = null;
-  if (laps.length > 0) {
-    const isRunner =
-      key.includes("run") || key.includes("walk") || key.includes("hike");
-    const isRider = key.includes("cycl") || key.includes("bik");
-    const lines = laps.slice(0, 20).map((lap, i) => {
-      const pace = isRunner ? formatPace(lap.distance, lap.duration) : null;
-      const speed = isRider ? formatSpeed(lap.averageSpeed) : null;
-      const effort = pace ?? speed ?? formatDuration(lap.duration);
+  if (summaries.length > 0) {
+    const lines = summaries.slice(0, 10).map((s) => {
+      const label = (s.splitType ?? "split")
+        .replace(/^(RWD|INTERVAL)_/, "")
+        .toLowerCase();
+      const effort =
+        label === "stand"
+          ? formatDuration(s.duration)
+          : formatPace(s.distance, s.movingDuration ?? s.duration) ??
+            formatDuration(s.duration);
       const hr =
-        lap.averageHR && lap.averageHR > 0
-          ? `${Math.round(lap.averageHR)} bpm`
+        s.averageHR && s.averageHR > 0
+          ? `${Math.round(s.averageHR)} bpm`
           : null;
-      return `*${lap.lapIndex ?? i + 1}* ${[effort, hr].filter(Boolean).join(" · ")}`;
+      return `*${label}* ${[
+        ...(label === "stand" ? [] : [formatDistance(s.distance)]),
+        effort,
+        hr,
+      ]
+        .filter(Boolean)
+        .join(" · ")}`;
     });
-    if (laps.length > 20) lines.push(`…and ${laps.length - 20} more laps`);
+    if (summaries.length > 10) lines.push(`…and ${summaries.length - 10} more`);
     splits = ["*Splits*", ...lines].join("\n");
     blocks.push({ type: "section", text: mrkdwn(splits) });
   }
 
-  if (when) {
+  if (whenLine) {
     blocks.push({
       type: "context",
-      elements: [mrkdwn(`🗓️ ${when} · via Garmin Connect`)],
+      elements: [mrkdwn(whenLine)],
     });
   }
 
@@ -220,7 +226,7 @@ export function buildSlackMessage(activity: GarminActivity): SlackMessage {
       fields.length > 0 ? ` — ${fields.join(" · ")}` : ""
     }`,
   ];
-  if (when) textLines.push(`🗓️ ${when} · via Garmin Connect`);
+  if (whenLine) textLines.push(whenLine);
   if (splits) textLines.push(splits);
   textLines.push(link);
   const text = textLines.join("\n");

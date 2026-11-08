@@ -32,7 +32,7 @@ interface Fixture {
 function stubNetwork(
   kv: MemKV,
   activities: unknown[],
-  options: { slackStatus?: number; slackBody?: unknown; laps?: unknown[] } = {},
+  options: { slackStatus?: number; slackBody?: unknown; detail?: unknown } = {},
 ): Fixture {
   const slackBodies: SlackPost[] = [];
   const stub = vi.fn(async (input: unknown, init?: { body?: string }) => {
@@ -44,10 +44,8 @@ function stubNetwork(
       return new Response(JSON.stringify(activities), { status: 200 });
     }
     if (url.startsWith("https://garmin.test/activity-service/activity/")) {
-      if (options.laps) {
-        return new Response(JSON.stringify({ lapDTOs: options.laps }), {
-          status: 200,
-        });
+      if (options.detail) {
+        return new Response(JSON.stringify(options.detail), { status: 200 });
       }
       throw new Error(`unexpected URL in stub: ${url}`);
     }
@@ -114,7 +112,7 @@ describe("runOnce", () => {
     expect(fx2.slackBodies).toHaveLength(0);
   });
 
-  it("posts the activity with per-lap splits when Garmin provides them", async () => {
+  it("posts the activity with detail (splits and location) when Garmin provides it", async () => {
     const kv = new MemKV();
     const older = fakeActivity({
       activityId: 111,
@@ -124,19 +122,43 @@ describe("runOnce", () => {
     await runOnce(fx1.env, fx1.stub); // bootstrap on the old one
 
     const fx2 = stubNetwork(kv, [fakeActivity({ activityId: 222 })], {
-      laps: [
-        { lapIndex: 1, distance: 1000, duration: 298, averageHR: 151 },
-        { lapIndex: 2, distance: 1000, duration: 305, averageHR: 154 },
-      ],
+      detail: {
+        activityId: 222,
+        activityName: "Midday run",
+        activityTypeDTO: { typeKey: "running" },
+        locationName: "Premià de Mar",
+        startTimeGMT: "2026-11-08 09:30:00",
+        distance: 10523,
+        movingDuration: 3000,
+        averageRunCadence: 163.5,
+        splitSummaries: [
+          {
+            splitType: "RWD_RUN",
+            distance: 8881.4,
+            duration: 3195.9,
+            movingDuration: 3120.9,
+            averageHR: 134,
+          },
+          {
+            splitType: "RWD_WALK",
+            distance: 843.06,
+            duration: 682,
+            movingDuration: 639,
+            averageHR: 138,
+          },
+        ],
+      },
     });
     await runOnce(fx2.env, fx2.stub);
     const blocks = JSON.stringify(fx2.slackBodies[0].blocks);
     expect(blocks).toContain("*Splits*");
-    expect(blocks).toContain("4:58/km"); // 298 s / 1 km
+    expect(blocks).toContain("*run* 8.88 km · 5:51/km · 134 bpm"); // 3120.9 s / 8.8814 km
+    expect(blocks).toContain("*walk* 0.84 km · 12:38/km · 138 bpm"); // 639 s / 0.843 km
+    expect(blocks).toContain("📍 Premià de Mar");
     expect(fx2.slackBodies[0].text).toContain("*Splits*");
   });
 
-  it("falls back to the summary when the splits call fails", async () => {
+  it("falls back to the summary when the detail call fails", async () => {
     const kv = new MemKV();
     const older = fakeActivity({
       activityId: 111,
@@ -145,7 +167,7 @@ describe("runOnce", () => {
     const fx1 = stubNetwork(kv, [older]);
     await runOnce(fx1.env, fx1.stub);
 
-    // No `laps` option: the stub throws on the splits URL.
+    // No `detail` option: the stub throws on the detail URL.
     const fx2 = stubNetwork(kv, [fakeActivity({ activityId: 222 })]);
     await runOnce(fx2.env, fx2.stub);
     expect(fx2.slackBodies).toHaveLength(1);
@@ -212,19 +234,22 @@ describe("buildSlackMessage", () => {
   });
 
   it("renders enrichment fields and splits when present", () => {
-    expect(message.text).not.toContain("Splits"); // the default fixture has no laps
+    expect(message.text).not.toContain("Splits"); // the default fixture has no detail
     const rich = buildSlackMessage(
       fakeActivity({
         maxHR: 178,
         elevationLoss: 40,
-        averageRunningCadence: 172.4,
-        averagePower: 210.4,
-        trainingEffect: 3.4,
-        anaerobicTrainingEffect: 1.2,
-        activityTrainingLoad: 245.6,
-        laps: [
-          { lapIndex: 1, distance: 1000, duration: 298, averageHR: 151 },
-          { lapIndex: 2, distance: 1000, duration: 305, averageHR: 154 },
+        averageRunCadence: 163.5,
+        locationName: "Premià de Mar",
+        splitSummaries: [
+          {
+            splitType: "RWD_RUN",
+            distance: 8881.4,
+            duration: 3195.9,
+            movingDuration: 3120.9,
+            averageHR: 134,
+          },
+          { splitType: "RWD_STAND", distance: 19.9, duration: 87 },
         ],
       }),
     );
@@ -232,32 +257,30 @@ describe("buildSlackMessage", () => {
     for (const part of [
       "max HR 178 bpm",
       "−40 m",
-      "172 spm",
-      "210 W",
-      "TE 3.4/1.2",
-      "load 246",
+      "164 spm", // averageRunCadence 163.5 rounds up
       "*Splits*",
-      "4:58/km",
-      "151 bpm",
+      "*run* 8.88 km · 5:51/km · 134 bpm",
+      "*stand* 1:27",
+      "📍 Premià de Mar",
     ]) {
       expect(body).toContain(part);
     }
     // text mirrors the blocks for text-only consumers
-    expect(rich.text).toContain("TE 3.4/1.2");
     expect(rich.text).toContain("*Splits*");
+    expect(rich.text).toContain("📍 Premià de Mar");
   });
 
-  it("caps the splits section at 20 laps", () => {
+  it("caps the splits section at 10 phases", () => {
     const many = buildSlackMessage(
       fakeActivity({
-        laps: Array.from({ length: 25 }, (_, i) => ({
-          lapIndex: i + 1,
+        splitSummaries: Array.from({ length: 14 }, (_, i) => ({
+          splitType: "RWD_RUN",
           distance: 1000,
           duration: 300,
         })),
       }),
     );
-    expect(JSON.stringify(many.blocks)).toContain("5 more laps");
+    expect(JSON.stringify(many.blocks)).toContain("4 more");
   });
 
   it("cycling activity shows speed instead of pace", () => {

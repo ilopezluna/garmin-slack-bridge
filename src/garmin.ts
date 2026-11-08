@@ -73,6 +73,7 @@ export interface GarminActivity {
   description?: string;
   activityType?: string | { typeKey?: string };
   type?: string | { typeKey?: string };
+  activityTypeDTO?: { typeKey?: string };
   startTimeGMT?: string;
   startTimeLocal?: string;
   distance?: number; // meters
@@ -88,17 +89,18 @@ export interface GarminActivity {
   maxSpeed?: number;
   startLatitude?: number;
   startLongitude?: number;
-  laps?: GarminLap[];
+  splitSummaries?: GarminSplitSummary[];
+  locationName?: string;
   [key: string]: unknown;
 }
 
-/** One lap/split of an activity, from the splits endpoint. */
-export interface GarminLap {
-  lapIndex?: number;
+/** One run/walk/interval phase of an activity, from the detail endpoint. */
+export interface GarminSplitSummary {
+  splitType?: string; // "RWD_RUN", "RWD_WALK", "INTERVAL_ACTIVE"...
   distance?: number; // meters
   duration?: number; // seconds
+  movingDuration?: number;
   averageHR?: number;
-  averageSpeed?: number; // m/s
   [key: string]: unknown;
 }
 
@@ -118,7 +120,8 @@ function parseSearchResponse(json: unknown): GarminActivity[] {
 
 /** Sport type key ("running", "cycling"...), tolerating string or object. */
 export function activityTypeKey(activity: GarminActivity): string {
-  const raw = activity.activityType ?? activity.type;
+  const raw =
+    activity.activityType ?? activity.type ?? activity.activityTypeDTO;
   if (typeof raw === "string") return raw;
   return raw?.typeKey ?? "";
 }
@@ -144,27 +147,30 @@ export async function listRecentActivities(
   return parseSearchResponse(json);
 }
 
-/** Fetches the per-lap splits of an activity (lapDTOs shape; [] if it has none). */
-export async function getActivityLaps(
+/** Fetches the full activity detail and flattens its summaryDTO into the activity.
+ * Adds fields the list lacks: cadence, stride, steps, intensity minutes,
+ * locationName and splitSummaries (run/walk/interval phases). */
+export async function getActivityDetail(
   baseUrl: string,
   bearerToken: string,
   activityId: number | string,
   fetchFn: FetchFn = fetch,
-): Promise<GarminLap[]> {
-  const res = await fetchFn(`${baseUrl}${ACTIVITY_PATH}/${activityId}/splits`, {
+): Promise<GarminActivity> {
+  const res = await fetchFn(`${baseUrl}${ACTIVITY_PATH}/${activityId}`, {
     headers: {
       Authorization: `Bearer ${bearerToken}`,
       Accept: "application/json",
     },
   });
   if (!res.ok) {
-    throw new Error(`Garmin returned ${res.status} for splits of ${activityId}`);
+    throw new Error(`Garmin returned ${res.status} for detail of ${activityId}`);
   }
-  const json = (await res.json()) as { lapDTOs?: unknown[] } | unknown[] | null;
-  const list = Array.isArray(json) ? json : json?.lapDTOs;
-  return Array.isArray(list)
-    ? list.filter((x): x is GarminLap => x !== null)
-    : [];
+  const detail = (await res.json()) as
+    | (GarminActivity & { summaryDTO?: GarminActivity })
+    | null;
+  if (!detail) return { activityId };
+  const { summaryDTO, ...rest } = detail;
+  return { ...rest, ...(summaryDTO ?? {}) };
 }
 
 /** Converts `startTimeGMT` ("2026-11-08 06:30:00" or ISO) into UTC milliseconds. */
