@@ -100,3 +100,7 @@ formatting, and pace-vs-speed selection by sport.
 - Tokens are valid for 24 h; we cache them 18 h in KV for headroom.
 - Data: the API key and token belong to the athlete themself; the app shares nothing
   with anyone.
+- The message is Block Kit, but the `text` field mirrors its full content (title,
+  metrics, date and link), so consumers that only read `text` miss nothing.
+
+`MIT` — see [LICENSE](LICENSE).
