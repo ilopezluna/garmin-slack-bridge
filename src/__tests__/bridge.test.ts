@@ -24,7 +24,7 @@ interface SlackPost {
 interface Fixture {
   kv: MemKV;
   slackBodies: SlackPost[];
-  stub: ReturnType<typeof vi.fn>;
+  stub: (...args: any[]) => any;
   env: ReturnType<typeof makeEnv>["env"];
 }
 
