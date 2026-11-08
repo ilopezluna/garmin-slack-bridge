@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Posts your Garmin Connect activities to a Slack channel (Personal API). Zero runtime dependencies.",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --test-scheduled",
