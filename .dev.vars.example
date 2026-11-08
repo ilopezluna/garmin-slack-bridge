@@ -1,0 +1,6 @@
+# Copy this file to .dev.vars and fill in the values for `npm run dev`.
+# .dev.vars is gitignored: never commit it.
+
+GARMIN_API_KEY=
+SLACK_BOT_TOKEN=xoxb-
+SLACK_CHANNEL_ID=

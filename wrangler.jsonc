@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "garmin-slack-bridge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "triggers": {
+    "crons": ["*/5 * * * *"],
+  },
+  "kv_namespaces": [
+    {
+      "binding": "KV",
+      "id": "af75b6e19b9d4315b523e9432bbcd1fb",
+      "remote": true,
+    },
+  ],
+  "vars": {
+    "GARMIN_BASE_URL": "https://personal.connectapi.garmin.com",
+  },
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+    },
+    "traces": {
+      "enabled": false,
+    },
+  },
+}
