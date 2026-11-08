@@ -154,7 +154,17 @@ export function buildSlackMessage(activity: GarminActivity): SlackMessage {
     });
   }
 
-  const text = `${emoji} ${title}${distance ? ` — ${distance}` : ""}`;
+  // The `text` field mirrors the blocks so text-only consumers
+  // (notifications, workflows) still get the whole content. The title
+  // is escaped too: unescaped, a name like "<!channel>" would ping.
+  const textLines = [
+    `${emoji} ${escapeTitle(title)}${
+      fields.length > 0 ? ` — ${fields.join(" · ")}` : ""
+    }`,
+  ];
+  if (when) textLines.push(`🗓️ ${when} · via Garmin Connect`);
+  textLines.push(link);
+  const text = textLines.join("\n");
   return { text, blocks };
 }
 
