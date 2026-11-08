@@ -155,9 +155,12 @@ export function buildSlackMessage(activity: GarminActivity): SlackMessage {
   }
 
   // The `text` field mirrors the blocks so text-only consumers
-  // (notifications, workflows) still get the whole content.
+  // (notifications, workflows) still get the whole content. The title
+  // is escaped too: unescaped, a name like "<!channel>" would ping.
   const textLines = [
-    `${emoji} ${title}${fields.length > 0 ? ` — ${fields.join(" · ")}` : ""}`,
+    `${emoji} ${escapeTitle(title)}${
+      fields.length > 0 ? ` — ${fields.join(" · ")}` : ""
+    }`,
   ];
   if (when) textLines.push(`🗓️ ${when} · via Garmin Connect`);
   textLines.push(link);
