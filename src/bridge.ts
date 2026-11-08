@@ -1,9 +1,11 @@
 import {
   activityStartMs,
+  getActivityDetail,
   GARMIN_BASE_URL,
   getGarminAccessToken,
   listRecentActivities,
   type FetchFn,
+  type GarminActivity,
 } from "./garmin";
 import type { Env } from "./env";
 import {
@@ -26,6 +28,29 @@ function readWatermark(env: Env): Promise<number> {
   return env.KV.get(WATERMARK_KEY).then((v) => Number(v ?? 0));
 }
 
+/** Enriches the activity with its full detail; if it fails, the summary is posted as-is. */
+async function withDetail(
+  baseUrl: string,
+  token: string,
+  activity: GarminActivity,
+  fetchFn: FetchFn,
+): Promise<GarminActivity> {
+  try {
+    const detail = await getActivityDetail(
+      baseUrl,
+      token,
+      activity.activityId,
+      fetchFn,
+    );
+    return Object.keys(detail).length > 0 ? detail : activity;
+  } catch (err) {
+    console.warn(
+      `[garmin-slack-bridge] no detail for ${activity.activityId}: ${err}`,
+    );
+    return activity;
+  }
+}
+
 /**
  * One pass of the Garmin → Slack bridge:
  * 1. token (cached in KV),
@@ -42,8 +67,9 @@ export async function runOnce(
 ): Promise<RunResult> {
   const watermark = await readWatermark(env);
   const token = await getGarminAccessToken(env, fetchFn);
+  const baseUrl = env.GARMIN_BASE_URL ?? GARMIN_BASE_URL;
   const activities = await listRecentActivities(
-    env.GARMIN_BASE_URL ?? GARMIN_BASE_URL,
+    baseUrl,
     token,
     LIST_LIMIT,
     fetchFn,
@@ -69,7 +95,8 @@ export async function runOnce(
     .filter((t) => t.start > watermark)
     .sort((a, b) => a.start - b.start);
   for (const { activity, start } of toPost) {
-    await postSlackMessage(env, buildSlackMessage(activity), fetchFn);
+    const enriched = await withDetail(baseUrl, token, activity, fetchFn);
+    await postSlackMessage(env, buildSlackMessage(enriched), fetchFn);
     // The watermark only advances if the post succeeded: if it fails midway,
     // the next cron retries what is pending without duplicating what was posted.
     await env.KV.put(WATERMARK_KEY, String(start));

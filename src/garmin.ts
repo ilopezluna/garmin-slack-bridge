@@ -8,6 +8,7 @@ export type FetchFn = typeof fetch;
 const TOKEN_PATH =
   "/personalapitoken-service/personal-api/personal-api-key/token";
 const ACTIVITIES_PATH = "/activitylist-service/activities/search/activities";
+const ACTIVITY_PATH = "/activity-service/activity";
 const TOKEN_CACHE_KEY = "garmin:access-token";
 /** Garmin tokens are valid for 24 h; we cache them a bit less for headroom. */
 export const TOKEN_TTL_SECONDS = 60 * 60 * 18;
@@ -72,6 +73,7 @@ export interface GarminActivity {
   description?: string;
   activityType?: string | { typeKey?: string };
   type?: string | { typeKey?: string };
+  activityTypeDTO?: { typeKey?: string };
   startTimeGMT?: string;
   startTimeLocal?: string;
   distance?: number; // meters
@@ -87,6 +89,18 @@ export interface GarminActivity {
   maxSpeed?: number;
   startLatitude?: number;
   startLongitude?: number;
+  splitSummaries?: GarminSplitSummary[];
+  locationName?: string;
+  [key: string]: unknown;
+}
+
+/** One run/walk/interval phase of an activity, from the detail endpoint. */
+export interface GarminSplitSummary {
+  splitType?: string; // "RWD_RUN", "RWD_WALK", "INTERVAL_ACTIVE"...
+  distance?: number; // meters
+  duration?: number; // seconds
+  movingDuration?: number;
+  averageHR?: number;
   [key: string]: unknown;
 }
 
@@ -106,7 +120,8 @@ function parseSearchResponse(json: unknown): GarminActivity[] {
 
 /** Sport type key ("running", "cycling"...), tolerating string or object. */
 export function activityTypeKey(activity: GarminActivity): string {
-  const raw = activity.activityType ?? activity.type;
+  const raw =
+    activity.activityType ?? activity.type ?? activity.activityTypeDTO;
   if (typeof raw === "string") return raw;
   return raw?.typeKey ?? "";
 }
@@ -130,6 +145,32 @@ export async function listRecentActivities(
   }
   const json = (await res.json()) as unknown;
   return parseSearchResponse(json);
+}
+
+/** Fetches the full activity detail and flattens its summaryDTO into the activity.
+ * Adds fields the list lacks: cadence, stride, steps, intensity minutes,
+ * locationName and splitSummaries (run/walk/interval phases). */
+export async function getActivityDetail(
+  baseUrl: string,
+  bearerToken: string,
+  activityId: number | string,
+  fetchFn: FetchFn = fetch,
+): Promise<GarminActivity> {
+  const res = await fetchFn(`${baseUrl}${ACTIVITY_PATH}/${activityId}`, {
+    headers: {
+      Authorization: `Bearer ${bearerToken}`,
+      Accept: "application/json",
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`Garmin returned ${res.status} for detail of ${activityId}`);
+  }
+  const detail = (await res.json()) as
+    | (GarminActivity & { summaryDTO?: GarminActivity })
+    | null;
+  if (!detail) return { activityId };
+  const { summaryDTO, ...rest } = detail;
+  return { ...rest, ...(summaryDTO ?? {}) };
 }
 
 /** Converts `startTimeGMT` ("2026-11-08 06:30:00" or ISO) into UTC milliseconds. */

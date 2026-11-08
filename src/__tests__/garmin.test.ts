@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   activityStartMs,
   extractAccessToken,
+  getActivityDetail,
   getGarminAccessToken,
   listRecentActivities,
   obtainGarminToken,
@@ -121,6 +122,42 @@ describe("listRecentActivities", () => {
       (await listRecentActivities("https://garmin.test", "tok", 1, stub))
         .length,
     ).toBe(1);
+  });
+});
+
+describe("getActivityDetail", () => {
+  it("flattens summaryDTO and keeps the detail-only fields", async () => {
+    const stub = vi.fn(async (_input?: unknown, _init?: any) =>
+      jsonResponse(200, {
+        activityId: 123,
+        activityName: "Run",
+        locationName: "Premià de Mar",
+        splitSummaries: [{ splitType: "RWD_RUN", distance: 8881 }],
+        summaryDTO: { distance: 9740, averageRunCadence: 163.5, maxHR: 147 },
+      }),
+    );
+    const detail = await getActivityDetail("https://garmin.test", "tok", 123, stub);
+    expect(String(stub.mock.calls[0][0])).toBe(
+      "https://garmin.test/activity-service/activity/123",
+    );
+    expect(detail).toEqual({
+      activityId: 123,
+      activityName: "Run",
+      locationName: "Premià de Mar",
+      splitSummaries: [{ splitType: "RWD_RUN", distance: 8881 }],
+      distance: 9740,
+      averageRunCadence: 163.5,
+      maxHR: 147,
+    });
+  });
+
+  it("throws when Garmin fails", async () => {
+    const stub = vi.fn(async (_input?: unknown, _init?: any) =>
+      jsonResponse(404, {}),
+    );
+    await expect(
+      getActivityDetail("https://garmin.test", "tok", 1, stub),
+    ).rejects.toThrow("404");
   });
 });
 
