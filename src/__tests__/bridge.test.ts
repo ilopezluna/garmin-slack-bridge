@@ -142,9 +142,17 @@ describe("buildSlackMessage", () => {
     expect(body).toContain("4:45/km"); // 3000 s movingDuration / 10.523 km
   });
 
-  it("has a plain-text fallback with title and distance", () => {
+  it("carries the full content in text for text-only consumers", () => {
     expect(message.text).toContain("Midday run");
     expect(message.text).toContain("10.52 km");
+    expect(message.text).toContain("4:45/km");
+    expect(message.text).toContain("+85 m");
+    expect(message.text).toContain("avg HR 152 bpm");
+    expect(message.text).toContain("703 kcal");
+    expect(message.text).toContain("11/08/2026 10:30:00");
+    expect(message.text).toContain(
+      "https://connect.garmin.com/modern/activity/123456789",
+    );
   });
 
   it("cycling activity shows speed instead of pace", () => {
