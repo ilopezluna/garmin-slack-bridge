@@ -38,6 +38,7 @@ function stubNetwork(
     detail?: unknown;
     detailStatuses?: number[];
     listStatuses?: number[];
+    onListStatus?: (status: number) => Promise<void> | void;
   } = {},
 ): Fixture {
   const slackBodies: SlackPost[] = [];
@@ -50,6 +51,7 @@ function stubNetwork(
     }
     if (url.startsWith(LIST_URL)) {
       const status = options.listStatuses?.[listCalls++] ?? 200;
+      await options.onListStatus?.(status);
       return new Response(JSON.stringify(activities), { status });
     }
     if (url.startsWith("https://garmin.test/activity-service/activity/")) {
@@ -262,6 +264,34 @@ describe("runOnce", () => {
       .mocked(fx.stub)
       .mock.calls.filter(([url]) => String(url).startsWith(LIST_URL));
     expect(listCalls).toHaveLength(2);
+  });
+
+  it("reuses a token refreshed by a concurrent run", async () => {
+    const kv = new MemKV();
+    await kv.put("garmin:access-token", "stale-token");
+    const fx = stubNetwork(kv, [fakeActivity()], {
+      listStatuses: [401, 200],
+      onListStatus: async (status) => {
+        if (status === 401) {
+          await kv.put("garmin:access-token", "concurrent-token");
+        }
+      },
+    });
+
+    await runOnce(fx.env, fx.stub);
+
+    const listCalls = vi
+      .mocked(fx.stub)
+      .mock.calls.filter(([url]) => String(url).startsWith(LIST_URL));
+    expect(listCalls[1][1]?.headers).toMatchObject({
+      Authorization: "Bearer concurrent-token",
+    });
+    expect(await kv.get("garmin:access-token")).toBe("concurrent-token");
+    expect(
+      vi
+        .mocked(fx.stub)
+        .mock.calls.some(([url]) => String(url).startsWith(TOKEN_URL)),
+    ).toBe(false);
   });
 
   it("if Slack fails, it throws and the watermark does not advance (retry on next cron)", async () => {

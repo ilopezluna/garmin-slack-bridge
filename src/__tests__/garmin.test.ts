@@ -47,6 +47,7 @@ describe("obtainGarminToken", () => {
       Authorization: "ApiKey key-123",
       Accept: "*/*",
     });
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("also tolerates a JSON body with access_token", async () => {
@@ -76,6 +77,17 @@ describe("obtainGarminToken", () => {
 
   it("throws when a JSON response does not contain a token", async () => {
     const stub = vi.fn(async () => jsonResponse(200, { expires_in: 86400 }));
+    await expect(
+      obtainGarminToken("https://garmin.test", "key", stub),
+    ).rejects.toThrow("does not contain an access token");
+  });
+
+  it.each([
+    ["an array", []],
+    ["a string", "serialized-token"],
+    ["a number", 123],
+  ])("rejects JSON whose top level is %s", async (_name, body) => {
+    const stub = vi.fn(async () => jsonResponse(200, body));
     await expect(
       obtainGarminToken("https://garmin.test", "key", stub),
     ).rejects.toThrow("does not contain an access token");
@@ -111,6 +123,7 @@ describe("listRecentActivities", () => {
       "/activitylist-service/activities/search/activities?start=0&limit=50",
     );
     expect(stub.mock.calls[0][1]?.headers?.Authorization).toBe("Bearer tok");
+    expect(stub.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("clamps the requested limit to 100", async () => {
@@ -152,6 +165,7 @@ describe("getActivityDetail", () => {
     expect(String(stub.mock.calls[0][0])).toBe(
       "https://garmin.test/activity-service/activity/123",
     );
+    expect(stub.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
     expect(detail).toEqual({
       activityId: 123,
       activityName: "Run",

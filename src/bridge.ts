@@ -5,7 +5,7 @@ import {
   GARMIN_BASE_URL,
   getGarminAccessToken,
   listRecentActivities,
-  TOKEN_CACHE_KEY,
+  refreshGarminAccessToken,
   type FetchFn,
   type GarminActivity,
 } from "./garmin";
@@ -46,8 +46,7 @@ async function createGarminSession(
       if (!(err instanceof GarminHttpError) || err.status !== 401) throw err;
     }
 
-    await env.KV.delete(TOKEN_CACHE_KEY);
-    token = await getGarminAccessToken(env, fetchFn);
+    token = await refreshGarminAccessToken(env, token, fetchFn);
     console.log(
       "[garmin-slack-bridge] cached token was rejected; refreshed it",
     );
