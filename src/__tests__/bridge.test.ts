@@ -14,6 +14,7 @@ const TOKEN_URL =
   "https://garmin.test/personalapitoken-service/personal-api/personal-api-key/token";
 const LIST_URL =
   "https://garmin.test/activitylist-service/activities/search/activities";
+const FRESH_TOKEN = "fresh.payload.signature";
 
 interface SlackPost {
   channel: string;
@@ -47,7 +48,7 @@ function stubNetwork(
   const stub = vi.fn(async (input: unknown, init?: { body?: string }) => {
     const url = String(input);
     if (url.startsWith(TOKEN_URL)) {
-      return new Response("tok-test", { status: 200 });
+      return new Response(FRESH_TOKEN, { status: 200 });
     }
     if (url.startsWith(LIST_URL)) {
       const status = options.listStatuses?.[listCalls++] ?? 200;
@@ -213,8 +214,15 @@ describe("runOnce", () => {
     const result = await runOnce(fx2.env, fx2.stub);
     expect(result).toEqual({ bootstrap: false, posted: 1 });
     expect(fx2.slackBodies).toHaveLength(1);
-    // the bogus token was dropped and a fresh one cached
-    expect(await kv.get("garmin:access-token")).toBe("tok-test");
+    expect(await kv.get("garmin:access-token")).toBe(FRESH_TOKEN);
+    const listCalls = vi
+      .mocked(fx2.stub)
+      .mock.calls.filter(([url]) => String(url).startsWith(LIST_URL));
+    expect(
+      listCalls.map(([, init]) =>
+        new Headers(init?.headers).get("Authorization"),
+      ),
+    ).toEqual(["Bearer stale-token", `Bearer ${FRESH_TOKEN}`]);
   });
 
   it("refreshes the token when an activity detail request returns 401", async () => {
@@ -233,7 +241,19 @@ describe("runOnce", () => {
 
     expect(result).toEqual({ bootstrap: false, posted: 1 });
     expect(JSON.stringify(fx.slackBodies[0].blocks)).toContain("Premià de Mar");
-    expect(await kv.get("garmin:access-token")).toBe("tok-test");
+    expect(await kv.get("garmin:access-token")).toBe(FRESH_TOKEN);
+    const detailCalls = vi
+      .mocked(fx.stub)
+      .mock.calls.filter(([url]) =>
+        String(url).startsWith(
+          "https://garmin.test/activity-service/activity/",
+        ),
+      );
+    expect(
+      detailCalls.map(([, init]) =>
+        new Headers(init?.headers).get("Authorization"),
+      ),
+    ).toEqual(["Bearer stale-token", `Bearer ${FRESH_TOKEN}`]);
   });
 
   it("does not refresh for a non-authentication Garmin error", async () => {

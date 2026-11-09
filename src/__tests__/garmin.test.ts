@@ -33,14 +33,14 @@ describe("obtainGarminToken", () => {
   it("uses the ApiKey authorization header and returns the plaintext token", async () => {
     const stub = vi.fn(
       async (_input?: unknown, _init?: any) =>
-        new Response(" jwt-token ", { status: 200 }),
+        new Response(" header.payload.signature ", { status: 200 }),
     );
     const token = await obtainGarminToken(
       "https://garmin.test",
       "key-123",
       stub,
     );
-    expect(token).toBe("jwt-token");
+    expect(token).toBe("header.payload.signature");
     const [url, init] = stub.mock.calls[0];
     expect(String(url)).toContain("/personalapitoken-service/");
     expect(init?.headers).toMatchObject({
@@ -82,6 +82,13 @@ describe("obtainGarminToken", () => {
     ).rejects.toThrow("does not contain an access token");
   });
 
+  it("rejects a non-JSON response that is not a JWT", async () => {
+    const stub = vi.fn(async () => new Response("service unavailable"));
+    await expect(
+      obtainGarminToken("https://garmin.test", "key", stub),
+    ).rejects.toThrow("invalid plaintext response");
+  });
+
   it.each([
     ["an array", []],
     ["a string", "serialized-token"],
@@ -97,12 +104,18 @@ describe("obtainGarminToken", () => {
 describe("getGarminAccessToken", () => {
   it("caches the token in KV and does not re-exchange it", async () => {
     const { env, kv } = makeEnv();
-    const stub = vi.fn(async () => new Response("tok-2"));
+    const stub = vi.fn(async () => new Response("cached.payload.signature"));
 
-    expect(await getGarminAccessToken(env, stub)).toBe("tok-2");
-    expect(await getGarminAccessToken(env, stub)).toBe("tok-2");
+    expect(await getGarminAccessToken(env, stub)).toBe(
+      "cached.payload.signature",
+    );
+    expect(await getGarminAccessToken(env, stub)).toBe(
+      "cached.payload.signature",
+    );
     expect(stub).toHaveBeenCalledTimes(1);
-    expect(await kv.get("garmin:access-token")).toBe("tok-2");
+    expect(await kv.get("garmin:access-token")).toBe(
+      "cached.payload.signature",
+    );
   });
 });
 

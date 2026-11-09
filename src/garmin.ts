@@ -9,6 +9,8 @@ const TOKEN_PATH =
   "/personalapitoken-service/personal-api/personal-api-key/token";
 const ACTIVITIES_PATH = "/activitylist-service/activities/search/activities";
 const ACTIVITY_PATH = "/activity-service/activity";
+const JWT_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
 /** Garmin tokens are valid for 24 h; we cache them a bit less for headroom. */
 export const TOKEN_TTL_SECONDS = 60 * 60 * 18;
 export const TOKEN_CACHE_KEY = "garmin:access-token";
@@ -70,6 +72,9 @@ export async function obtainGarminToken(
   } catch (err) {
     if (["{", "[", '"'].includes(raw[0])) {
       throw new Error("Garmin token: malformed JSON response", { cause: err });
+    }
+    if (!JWT_PATTERN.test(raw)) {
+      throw new Error("Garmin token: invalid plaintext response");
     }
     return raw;
   }
