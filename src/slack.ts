@@ -192,8 +192,8 @@ export function buildSlackMessage(activity: GarminActivity): SlackMessage {
       const effort =
         label === "stand"
           ? formatDuration(s.duration)
-          : formatPace(s.distance, s.movingDuration ?? s.duration) ??
-            formatDuration(s.duration);
+          : (formatPace(s.distance, s.movingDuration ?? s.duration) ??
+            formatDuration(s.duration));
       const hr =
         s.averageHR && s.averageHR > 0
           ? `${Math.round(s.averageHR)} bpm`

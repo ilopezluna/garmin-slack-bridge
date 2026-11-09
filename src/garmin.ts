@@ -9,9 +9,33 @@ const TOKEN_PATH =
   "/personalapitoken-service/personal-api/personal-api-key/token";
 const ACTIVITIES_PATH = "/activitylist-service/activities/search/activities";
 const ACTIVITY_PATH = "/activity-service/activity";
+const JWT_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
 /** Garmin tokens are valid for 24 h; we cache them a bit less for headroom. */
 export const TOKEN_TTL_SECONDS = 60 * 60 * 18;
 export const TOKEN_CACHE_KEY = "garmin:access-token";
+const GARMIN_REQUEST_TIMEOUT_MS = 15_000;
+
+export class GarminHttpError extends Error {
+  constructor(
+    readonly status: number,
+    operation: string,
+  ) {
+    super(`Garmin returned ${status} ${operation}`);
+    this.name = "GarminHttpError";
+  }
+}
+
+function fetchGarmin(
+  fetchFn: FetchFn,
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  return fetchFn(url, {
+    ...init,
+    signal: AbortSignal.timeout(GARMIN_REQUEST_TIMEOUT_MS),
+  });
+}
 
 /** Extracts the access token from the token endpoint response, tolerating field naming. */
 export function extractAccessToken(body: unknown): string | null {
@@ -30,21 +54,36 @@ export async function obtainGarminToken(
   apiKey: string,
   fetchFn: FetchFn = fetch,
 ): Promise<string> {
-  const res = await fetchFn(`${baseUrl}${TOKEN_PATH}`, {
+  const res = await fetchGarmin(fetchFn, `${baseUrl}${TOKEN_PATH}`, {
     method: "POST",
     headers: { Authorization: `ApiKey ${apiKey}`, Accept: "*/*" },
   });
   if (!res.ok) {
-    throw new Error(`Garmin returned ${res.status} when requesting the token`);
+    throw new GarminHttpError(res.status, "when requesting the token");
   }
   const raw = (await res.text()).trim();
   // The token usually comes as plaintext (a JWT); we also tolerate JSON with access_token.
   if (!raw) {
     throw new Error("Garmin token: empty response");
   }
-  return raw.startsWith("{")
-    ? (extractAccessToken(JSON.parse(raw)) ?? "")
-    : raw;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (err) {
+    if (["{", "[", '"'].includes(raw[0])) {
+      throw new Error("Garmin token: malformed JSON response", { cause: err });
+    }
+    if (!JWT_PATTERN.test(raw)) {
+      throw new Error("Garmin token: invalid plaintext response");
+    }
+    return raw;
+  }
+
+  const token = extractAccessToken(parsed);
+  if (!token) {
+    throw new Error("Garmin token: response does not contain an access token");
+  }
+  return token;
 }
 
 /** Returns an access token: from KV if cached, otherwise exchanged from the API key. */
@@ -64,6 +103,32 @@ export async function getGarminAccessToken(
     expirationTtl: TOKEN_TTL_SECONDS,
   });
   return token;
+}
+
+/** Reuses a token cached by another run, otherwise replaces the rejected token. */
+export async function refreshGarminAccessToken(
+  env: Env,
+  rejectedToken: string,
+  fetchFn: FetchFn = fetch,
+): Promise<string> {
+  const cached = await env.KV.get(TOKEN_CACHE_KEY);
+  if (cached && cached !== rejectedToken) return cached;
+
+  try {
+    const token = await obtainGarminToken(
+      env.GARMIN_BASE_URL ?? GARMIN_BASE_URL,
+      env.GARMIN_API_KEY,
+      fetchFn,
+    );
+    await env.KV.put(TOKEN_CACHE_KEY, token, {
+      expirationTtl: TOKEN_TTL_SECONDS,
+    });
+    return token;
+  } catch (err) {
+    const concurrent = await env.KV.get(TOKEN_CACHE_KEY);
+    if (concurrent && concurrent !== rejectedToken) return concurrent;
+    throw err;
+  }
 }
 
 /** Activity summary as returned by the Personal API listing endpoint. */
@@ -134,14 +199,14 @@ export async function listRecentActivities(
   fetchFn: FetchFn = fetch,
 ): Promise<GarminActivity[]> {
   const url = `${baseUrl}${ACTIVITIES_PATH}?start=0&limit=${Math.min(limit, 100)}`;
-  const res = await fetchFn(url, {
+  const res = await fetchGarmin(fetchFn, url, {
     headers: {
       Authorization: `Bearer ${bearerToken}`,
       Accept: "application/json",
     },
   });
   if (!res.ok) {
-    throw new Error(`Garmin returned ${res.status} when listing activities`);
+    throw new GarminHttpError(res.status, "when listing activities");
   }
   const json = (await res.json()) as unknown;
   return parseSearchResponse(json);
@@ -156,18 +221,21 @@ export async function getActivityDetail(
   activityId: number | string,
   fetchFn: FetchFn = fetch,
 ): Promise<GarminActivity> {
-  const res = await fetchFn(`${baseUrl}${ACTIVITY_PATH}/${activityId}`, {
-    headers: {
-      Authorization: `Bearer ${bearerToken}`,
-      Accept: "application/json",
+  const res = await fetchGarmin(
+    fetchFn,
+    `${baseUrl}${ACTIVITY_PATH}/${activityId}`,
+    {
+      headers: {
+        Authorization: `Bearer ${bearerToken}`,
+        Accept: "application/json",
+      },
     },
-  });
+  );
   if (!res.ok) {
-    throw new Error(`Garmin returned ${res.status} for detail of ${activityId}`);
+    throw new GarminHttpError(res.status, `for detail of ${activityId}`);
   }
   const detail = (await res.json()) as
-    | (GarminActivity & { summaryDTO?: GarminActivity })
-    | null;
+    (GarminActivity & { summaryDTO?: GarminActivity }) | null;
   if (!detail) return { activityId };
   const { summaryDTO, ...rest } = detail;
   return { ...rest, ...(summaryDTO ?? {}) };

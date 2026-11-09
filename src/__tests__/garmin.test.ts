@@ -33,20 +33,21 @@ describe("obtainGarminToken", () => {
   it("uses the ApiKey authorization header and returns the plaintext token", async () => {
     const stub = vi.fn(
       async (_input?: unknown, _init?: any) =>
-        new Response(" jwt-token ", { status: 200 }),
+        new Response(" header.payload.signature ", { status: 200 }),
     );
     const token = await obtainGarminToken(
       "https://garmin.test",
       "key-123",
       stub,
     );
-    expect(token).toBe("jwt-token");
+    expect(token).toBe("header.payload.signature");
     const [url, init] = stub.mock.calls[0];
     expect(String(url)).toContain("/personalapitoken-service/");
     expect(init?.headers).toMatchObject({
       Authorization: "ApiKey key-123",
       Accept: "*/*",
     });
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("also tolerates a JSON body with access_token", async () => {
@@ -73,17 +74,48 @@ describe("obtainGarminToken", () => {
       obtainGarminToken("https://garmin.test", "key", stub),
     ).rejects.toThrow("empty");
   });
+
+  it("throws when a JSON response does not contain a token", async () => {
+    const stub = vi.fn(async () => jsonResponse(200, { expires_in: 86400 }));
+    await expect(
+      obtainGarminToken("https://garmin.test", "key", stub),
+    ).rejects.toThrow("does not contain an access token");
+  });
+
+  it("rejects a non-JSON response that is not a JWT", async () => {
+    const stub = vi.fn(async () => new Response("service unavailable"));
+    await expect(
+      obtainGarminToken("https://garmin.test", "key", stub),
+    ).rejects.toThrow("invalid plaintext response");
+  });
+
+  it.each([
+    ["an array", []],
+    ["a string", "serialized-token"],
+    ["a number", 123],
+  ])("rejects JSON whose top level is %s", async (_name, body) => {
+    const stub = vi.fn(async () => jsonResponse(200, body));
+    await expect(
+      obtainGarminToken("https://garmin.test", "key", stub),
+    ).rejects.toThrow("does not contain an access token");
+  });
 });
 
 describe("getGarminAccessToken", () => {
   it("caches the token in KV and does not re-exchange it", async () => {
     const { env, kv } = makeEnv();
-    const stub = vi.fn(async () => new Response("tok-2"));
+    const stub = vi.fn(async () => new Response("cached.payload.signature"));
 
-    expect(await getGarminAccessToken(env, stub)).toBe("tok-2");
-    expect(await getGarminAccessToken(env, stub)).toBe("tok-2");
+    expect(await getGarminAccessToken(env, stub)).toBe(
+      "cached.payload.signature",
+    );
+    expect(await getGarminAccessToken(env, stub)).toBe(
+      "cached.payload.signature",
+    );
     expect(stub).toHaveBeenCalledTimes(1);
-    expect(await kv.get("garmin:access-token")).toBe("tok-2");
+    expect(await kv.get("garmin:access-token")).toBe(
+      "cached.payload.signature",
+    );
   });
 });
 
@@ -104,6 +136,7 @@ describe("listRecentActivities", () => {
       "/activitylist-service/activities/search/activities?start=0&limit=50",
     );
     expect(stub.mock.calls[0][1]?.headers?.Authorization).toBe("Bearer tok");
+    expect(stub.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("clamps the requested limit to 100", async () => {
@@ -136,10 +169,16 @@ describe("getActivityDetail", () => {
         summaryDTO: { distance: 9740, averageRunCadence: 163.5, maxHR: 147 },
       }),
     );
-    const detail = await getActivityDetail("https://garmin.test", "tok", 123, stub);
+    const detail = await getActivityDetail(
+      "https://garmin.test",
+      "tok",
+      123,
+      stub,
+    );
     expect(String(stub.mock.calls[0][0])).toBe(
       "https://garmin.test/activity-service/activity/123",
     );
+    expect(stub.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
     expect(detail).toEqual({
       activityId: 123,
       activityName: "Run",
