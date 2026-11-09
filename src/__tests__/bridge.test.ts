@@ -36,10 +36,12 @@ function stubNetwork(
     slackStatus?: number;
     slackBody?: unknown;
     detail?: unknown;
+    detailStatuses?: number[];
     listStatuses?: number[];
   } = {},
 ): Fixture {
   const slackBodies: SlackPost[] = [];
+  let detailCalls = 0;
   let listCalls = 0;
   const stub = vi.fn(async (input: unknown, init?: { body?: string }) => {
     const url = String(input);
@@ -51,6 +53,10 @@ function stubNetwork(
       return new Response(JSON.stringify(activities), { status });
     }
     if (url.startsWith("https://garmin.test/activity-service/activity/")) {
+      const status = options.detailStatuses?.[detailCalls++] ?? 200;
+      if (status !== 200) {
+        return new Response(JSON.stringify({}), { status });
+      }
       if (options.detail) {
         return new Response(JSON.stringify(options.detail), { status: 200 });
       }
@@ -64,7 +70,12 @@ function stubNetwork(
     }
     throw new Error(`unexpected URL in stub: ${url}`);
   });
-  return { kv, slackBodies, stub: stub as unknown as typeof fetch, env: makeEnv(kv).env };
+  return {
+    kv,
+    slackBodies,
+    stub: stub as unknown as typeof fetch,
+    env: makeEnv(kv).env,
+  };
 }
 
 describe("runOnce", () => {
@@ -202,6 +213,55 @@ describe("runOnce", () => {
     expect(fx2.slackBodies).toHaveLength(1);
     // the bogus token was dropped and a fresh one cached
     expect(await kv.get("garmin:access-token")).toBe("tok-test");
+  });
+
+  it("refreshes the token when an activity detail request returns 401", async () => {
+    const kv = new MemKV();
+    await kv.put(
+      "garmin:watermark",
+      String(Date.parse("2026-11-07T08:00:00Z")),
+    );
+    await kv.put("garmin:access-token", "stale-token");
+    const fx = stubNetwork(kv, [fakeActivity()], {
+      detailStatuses: [401, 200],
+      detail: fakeActivity({ locationName: "Premià de Mar" }),
+    });
+
+    const result = await runOnce(fx.env, fx.stub);
+
+    expect(result).toEqual({ bootstrap: false, posted: 1 });
+    expect(JSON.stringify(fx.slackBodies[0].blocks)).toContain("Premià de Mar");
+    expect(await kv.get("garmin:access-token")).toBe("tok-test");
+  });
+
+  it("does not refresh for a non-authentication Garmin error", async () => {
+    const kv = new MemKV();
+    await kv.put("garmin:access-token", "cached-token");
+    const fx = stubNetwork(kv, [fakeActivity()], { listStatuses: [403] });
+
+    await expect(runOnce(fx.env, fx.stub)).rejects.toThrow("403");
+
+    expect(await kv.get("garmin:access-token")).toBe("cached-token");
+    expect(
+      vi
+        .mocked(fx.stub)
+        .mock.calls.some(([url]) => String(url).startsWith(TOKEN_URL)),
+    ).toBe(false);
+  });
+
+  it("retries an unauthorized Garmin request only once", async () => {
+    const kv = new MemKV();
+    await kv.put("garmin:access-token", "stale-token");
+    const fx = stubNetwork(kv, [fakeActivity()], {
+      listStatuses: [401, 401],
+    });
+
+    await expect(runOnce(fx.env, fx.stub)).rejects.toThrow("401");
+
+    const listCalls = vi
+      .mocked(fx.stub)
+      .mock.calls.filter(([url]) => String(url).startsWith(LIST_URL));
+    expect(listCalls).toHaveLength(2);
   });
 
   it("if Slack fails, it throws and the watermark does not advance (retry on next cron)", async () => {

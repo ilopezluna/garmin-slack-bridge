@@ -13,6 +13,16 @@ const ACTIVITY_PATH = "/activity-service/activity";
 export const TOKEN_TTL_SECONDS = 60 * 60 * 18;
 export const TOKEN_CACHE_KEY = "garmin:access-token";
 
+export class GarminHttpError extends Error {
+  constructor(
+    readonly status: number,
+    operation: string,
+  ) {
+    super(`Garmin returned ${status} ${operation}`);
+    this.name = "GarminHttpError";
+  }
+}
+
 /** Extracts the access token from the token endpoint response, tolerating field naming. */
 export function extractAccessToken(body: unknown): string | null {
   if (body === null || typeof body !== "object") return null;
@@ -35,16 +45,20 @@ export async function obtainGarminToken(
     headers: { Authorization: `ApiKey ${apiKey}`, Accept: "*/*" },
   });
   if (!res.ok) {
-    throw new Error(`Garmin returned ${res.status} when requesting the token`);
+    throw new GarminHttpError(res.status, "when requesting the token");
   }
   const raw = (await res.text()).trim();
   // The token usually comes as plaintext (a JWT); we also tolerate JSON with access_token.
   if (!raw) {
     throw new Error("Garmin token: empty response");
   }
-  return raw.startsWith("{")
-    ? (extractAccessToken(JSON.parse(raw)) ?? "")
-    : raw;
+  if (!raw.startsWith("{")) return raw;
+
+  const token = extractAccessToken(JSON.parse(raw));
+  if (!token) {
+    throw new Error("Garmin token: response does not contain an access token");
+  }
+  return token;
 }
 
 /** Returns an access token: from KV if cached, otherwise exchanged from the API key. */
@@ -141,7 +155,7 @@ export async function listRecentActivities(
     },
   });
   if (!res.ok) {
-    throw new Error(`Garmin returned ${res.status} when listing activities`);
+    throw new GarminHttpError(res.status, "when listing activities");
   }
   const json = (await res.json()) as unknown;
   return parseSearchResponse(json);
@@ -163,11 +177,10 @@ export async function getActivityDetail(
     },
   });
   if (!res.ok) {
-    throw new Error(`Garmin returned ${res.status} for detail of ${activityId}`);
+    throw new GarminHttpError(res.status, `for detail of ${activityId}`);
   }
   const detail = (await res.json()) as
-    | (GarminActivity & { summaryDTO?: GarminActivity })
-    | null;
+    (GarminActivity & { summaryDTO?: GarminActivity }) | null;
   if (!detail) return { activityId };
   const { summaryDTO, ...rest } = detail;
   return { ...rest, ...(summaryDTO ?? {}) };

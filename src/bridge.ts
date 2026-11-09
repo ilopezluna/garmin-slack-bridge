@@ -1,5 +1,6 @@
 import {
   activityStartMs,
+  GarminHttpError,
   getActivityDetail,
   GARMIN_BASE_URL,
   getGarminAccessToken,
@@ -29,50 +30,41 @@ function readWatermark(env: Env): Promise<number> {
   return env.KV.get(WATERMARK_KEY).then((v) => Number(v ?? 0));
 }
 
-/** Lists activities; if the cached token was rejected (rotated API key or revoked
- * JWT), it drops the cache, mints a fresh token and retries once. */
-async function listWithFreshTokenOn401(
+/** Keeps one token for a bridge pass and refreshes it once per rejected request. */
+async function createGarminSession(
   env: Env,
-  baseUrl: string,
-  token: string,
   fetchFn: FetchFn,
-): Promise<{ token: string; activities: GarminActivity[] }> {
-  try {
-    const activities = await listRecentActivities(
-      baseUrl,
-      token,
-      LIST_LIMIT,
-      fetchFn,
-    );
-    return { token, activities };
-  } catch (err) {
-    if (!String(err).includes("401")) throw err;
+): Promise<<T>(operation: (token: string) => Promise<T>) => Promise<T>> {
+  let token = await getGarminAccessToken(env, fetchFn);
+
+  return async function request<T>(
+    operation: (token: string) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await operation(token);
+    } catch (err) {
+      if (!(err instanceof GarminHttpError) || err.status !== 401) throw err;
+    }
+
     await env.KV.delete(TOKEN_CACHE_KEY);
-    const fresh = await getGarminAccessToken(env, fetchFn);
-    const activities = await listRecentActivities(
-      baseUrl,
-      fresh,
-      LIST_LIMIT,
-      fetchFn,
+    token = await getGarminAccessToken(env, fetchFn);
+    console.log(
+      "[garmin-slack-bridge] cached token was rejected; refreshed it",
     );
-    console.log("[garmin-slack-bridge] cached token was rejected; refreshed it");
-    return { token: fresh, activities };
-  }
+    return operation(token);
+  };
 }
 
 /** Enriches the activity with its full detail; if it fails, the summary is posted as-is. */
 async function withDetail(
+  request: <T>(operation: (token: string) => Promise<T>) => Promise<T>,
   baseUrl: string,
-  token: string,
   activity: GarminActivity,
   fetchFn: FetchFn,
 ): Promise<GarminActivity> {
   try {
-    const detail = await getActivityDetail(
-      baseUrl,
-      token,
-      activity.activityId,
-      fetchFn,
+    const detail = await request((token) =>
+      getActivityDetail(baseUrl, token, activity.activityId, fetchFn),
     );
     return Object.keys(detail).length > 0 ? detail : activity;
   } catch (err) {
@@ -98,13 +90,10 @@ export async function runOnce(
   fetchFn: FetchFn = fetch,
 ): Promise<RunResult> {
   const watermark = await readWatermark(env);
-  const token = await getGarminAccessToken(env, fetchFn);
   const baseUrl = env.GARMIN_BASE_URL ?? GARMIN_BASE_URL;
-  const { token: activeToken, activities } = await listWithFreshTokenOn401(
-    env,
-    baseUrl,
-    token,
-    fetchFn,
+  const request = await createGarminSession(env, fetchFn);
+  const activities = await request((token) =>
+    listRecentActivities(baseUrl, token, LIST_LIMIT, fetchFn),
   );
 
   const timed = activities
@@ -127,7 +116,7 @@ export async function runOnce(
     .filter((t) => t.start > watermark)
     .sort((a, b) => a.start - b.start);
   for (const { activity, start } of toPost) {
-    const enriched = await withDetail(baseUrl, activeToken, activity, fetchFn);
+    const enriched = await withDetail(request, baseUrl, activity, fetchFn);
     await postSlackMessage(env, buildSlackMessage(enriched), fetchFn);
     // The watermark only advances if the post succeeded: if it fails midway,
     // the next cron retries what is pending without duplicating what was posted.

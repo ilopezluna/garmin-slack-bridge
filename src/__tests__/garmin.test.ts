@@ -73,6 +73,13 @@ describe("obtainGarminToken", () => {
       obtainGarminToken("https://garmin.test", "key", stub),
     ).rejects.toThrow("empty");
   });
+
+  it("throws when a JSON response does not contain a token", async () => {
+    const stub = vi.fn(async () => jsonResponse(200, { expires_in: 86400 }));
+    await expect(
+      obtainGarminToken("https://garmin.test", "key", stub),
+    ).rejects.toThrow("does not contain an access token");
+  });
 });
 
 describe("getGarminAccessToken", () => {
@@ -136,7 +143,12 @@ describe("getActivityDetail", () => {
         summaryDTO: { distance: 9740, averageRunCadence: 163.5, maxHR: 147 },
       }),
     );
-    const detail = await getActivityDetail("https://garmin.test", "tok", 123, stub);
+    const detail = await getActivityDetail(
+      "https://garmin.test",
+      "tok",
+      123,
+      stub,
+    );
     expect(String(stub.mock.calls[0][0])).toBe(
       "https://garmin.test/activity-service/activity/123",
     );
